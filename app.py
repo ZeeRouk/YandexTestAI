@@ -1,7 +1,6 @@
 import streamlit as st
 import json
-from groq import Groq
-import os
+import requests
 
 # Настройка страницы
 st.set_page_config(
@@ -10,6 +9,18 @@ st.set_page_config(
     layout="wide"
 )
 
+# API URL для нового роутера Hugging Face
+API_URL = "https://router.huggingface.co"
+
+# Токен встроен в headers
+HF_TOKEN = "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"
+
+# Headers с токеном
+HEADERS = {
+    "Authorization": f"Bearer {HF_TOKEN}",
+    "Content-Type": "application/json"
+}
+
 # Экспертный промпт
 EXPERT_PROMPT = """Ты — экспертный аналитик продаж и корпоративный психолог. Твоя задача: проанализировать входящий текст диалога между продавцом и клиентом и выдать структурированный JSON-ответ.
 В анализе должно быть два блока:
@@ -17,43 +28,61 @@ HARD DATA (Факты): суть запроса, бюджет, дедлайны,
 SOFT SKILLS & PSYCHOLOGY (Эмоции и манипуляции): эмоциональный фон клиента, точки давления, скрытые сигналы (готов ли покупать), совет менеджеру.
 Формат вывода: Строгий JSON без лишнего текста."""
 
-# Функция для тестирования API-ключа
-def test_api_key(api_key):
-    """Тестирует API-ключ простым запросом"""
+# Функция для тестирования API
+def test_api():
+    """Тестирует подключение к HuggingFace API"""
     try:
-        api_key = api_key.strip()
-        client = Groq(api_key=api_key)
+        # Простой тестовый запрос с Llama-3
+        # Для роутера используем формат: /chat/completions или /v1/chat/completions
+        model = "meta-llama/Llama-3-8b-Instruct"
         
-        # Простой тестовый запрос
-        response = client.chat.completions.create(
-            messages=[
+        # Пробуем разные форматы для роутера
+        urls_to_try = [
+            f"{API_URL}/v1/chat/completions",
+            f"{API_URL}/chat/completions",
+            f"{API_URL}/models/{model}"
+        ]
+        
+        payload = {
+            "model": model,
+            "messages": [
                 {"role": "user", "content": "Привет"}
             ],
-            model="llama3-8b-8192",  # Стабильная модель без требований к подтверждению телефона
-            max_tokens=10
-        )
-        return True, None
+            "max_tokens": 10
+        }
+        
+        response = None
+        for url in urls_to_try:
+            try:
+                response = requests.post(url, headers=HEADERS, json=payload, timeout=15)
+                if response.status_code != 404:
+                    break
+            except:
+                continue
+        
+        if response is None:
+            return False, "Не удалось подключиться к API"
+        
+        if response.status_code == 200:
+            return True, None
+        elif response.status_code == 401:
+            return False, "Неверный API-ключ. Проверьте токен в коде."
+        elif response.status_code == 403:
+            return False, "Доступ запрещён. Проверьте права доступа к модели или примите лицензию Llama-3."
+        elif response.status_code == 503:
+            return False, "Модель загружается. Подождите несколько секунд и попробуйте снова."
+        else:
+            return False, f"Ошибка {response.status_code}: {response.text[:200]}"
+            
+    except requests.exceptions.Timeout:
+        return False, "Таймаут запроса. Проверьте подключение к интернету."
     except Exception as e:
-        error_msg = str(e)
-        return False, error_msg
+        return False, f"Ошибка: {str(e)[:200]}"
 
 # Функция для анализа диалога
-def analyze_dialog(dialog_text, api_key):
-    """Анализирует диалог с помощью Groq API"""
+def analyze_dialog(dialog_text):
+    """Анализирует диалог с помощью HuggingFace API"""
     try:
-        # Проверка формата API-ключа
-        if not api_key or len(api_key.strip()) < 10:
-            return None, "API-ключ слишком короткий или пустой. Проверьте правильность ввода."
-        
-        # Очистка API-ключа от пробелов
-        api_key = api_key.strip()
-        
-        # Проверка, что ключ начинается с gsk_
-        if not api_key.startswith("gsk_"):
-            return None, "API-ключ должен начинаться с 'gsk_'. Проверьте правильность ввода."
-        
-        client = Groq(api_key=api_key)
-        
         full_prompt = f"""{EXPERT_PROMPT}
 
 Диалог для анализа:
@@ -61,49 +90,135 @@ def analyze_dialog(dialog_text, api_key):
 
 Выдай только JSON без дополнительных комментариев."""
         
-        # Пробуем разные модели, если основная не работает
-        # Начинаем с самой стабильной модели без требований к подтверждению телефона
+        # Формируем системный промпт и пользовательский запрос
+        system_prompt = "Ты — экспертный аналитик продаж. Всегда отвечай только валидным JSON без дополнительного текста."
+        
+        # Формат промпта для Llama-3
+        formatted_prompt = f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
+
+{system_prompt}<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+{full_prompt}<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+"""
+        
+        # Используем модели Llama-3 (стабильные для работы с текстом)
+        # Используем только проверенные названия моделей
         models_to_try = [
-            "llama3-8b-8192",  # Основная стабильная модель
-            "llama-3-70b-8192",
-            "llama-3.1-70b-versatile",
-            "mixtral-8x7b-32768"
+            "meta-llama/Llama-3-8b-Instruct",  # Основная модель - стабильная для текста
+            "meta-llama/Llama-3-70b-Instruct",  # Резервная модель (более мощная)
+            "meta-llama/Llama-3.1-8B-Instruct"  # Альтернативная версия (с большой B)
         ]
         
         last_error = None
         for model in models_to_try:
             try:
-                chat_completion = client.chat.completions.create(
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": "Ты — экспертный аналитик продаж. Всегда отвечай только валидным JSON без дополнительного текста."
-                        },
-                        {
-                            "role": "user",
-                            "content": full_prompt
-                        }
+                # Пробуем разные форматы для роутера
+                urls_to_try = [
+                    f"{API_URL}/v1/chat/completions",
+                    f"{API_URL}/chat/completions",
+                    f"{API_URL}/models/{model}"
+                ]
+                
+                # Формат для chat completions (OpenAI-совместимый)
+                chat_payload = {
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": full_prompt}
                     ],
-                    model=model,
-                    temperature=0.3,
-                    max_tokens=2000
-                )
+                    "max_tokens": 2000,
+                    "temperature": 0.3
+                }
                 
-                response_text = chat_completion.choices[0].message.content.strip()
+                # Формат для старого API
+                old_payload = {
+                    "inputs": formatted_prompt,
+                    "parameters": {
+                        "max_new_tokens": 2000,
+                        "temperature": 0.3,
+                        "return_full_text": False
+                    }
+                }
                 
-                # Попытка извлечь JSON из ответа (на случай, если модель добавит текст)
-                if "```json" in response_text:
-                    response_text = response_text.split("```json")[1].split("```")[0].strip()
-                elif "```" in response_text:
-                    response_text = response_text.split("```")[1].split("```")[0].strip()
+                response = None
+                for url in urls_to_try:
+                    try:
+                        # Пробуем chat completions формат
+                        if "/chat/completions" in url or "/v1/chat/completions" in url:
+                            payload = chat_payload
+                        else:
+                            payload = old_payload
+                            
+                        response = requests.post(url, headers=HEADERS, json=payload, timeout=60)
+                        
+                        if response.status_code == 200:
+                            break
+                        elif response.status_code != 404:
+                            # Если не 404, значит endpoint существует, но ошибка другая
+                            break
+                    except:
+                        continue
                 
-                return response_text, None
+                if response is None:
+                    last_error = "Не удалось подключиться к API"
+                    continue
                 
+                if response.status_code == 200:
+                    result = response.json()
+                    
+                    # Обработка ответа в формате chat completions
+                    if isinstance(result, dict) and "choices" in result:
+                        response_text = result["choices"][0]["message"]["content"]
+                    # Обработка старого формата
+                    elif isinstance(result, list) and len(result) > 0:
+                        response_text = result[0].get("generated_text", "")
+                    elif isinstance(result, dict):
+                        response_text = result.get("generated_text", str(result))
+                    else:
+                        response_text = str(result)
+                    
+                    response_text = response_text.strip()
+                    
+                    # Попытка извлечь JSON из ответа
+                    if "```json" in response_text:
+                        response_text = response_text.split("```json")[1].split("```")[0].strip()
+                    elif "```" in response_text:
+                        response_text = response_text.split("```")[1].split("```")[0].strip()
+                    
+                    # Ищем JSON в ответе
+                    json_start = response_text.find('{')
+                    json_end = response_text.rfind('}') + 1
+                    
+                    if json_start != -1 and json_end > json_start:
+                        response_text = response_text[json_start:json_end]
+                    
+                    return response_text, None
+                    
+                elif response.status_code == 503:
+                    # Модель загружается, пробуем следующую
+                    last_error = f"Модель {model} загружается. Пробую следующую..."
+                    continue
+                elif response.status_code == 400:
+                    # Модель не найдена, пробуем следующую
+                    error_data = response.json() if response.text else {}
+                    if "model_not_found" in str(error_data) or "does not exist" in response.text:
+                        last_error = f"Модель {model} не найдена. Пробую следующую..."
+                        continue
+                    else:
+                        last_error = f"Ошибка 400: {response.text[:200]}"
+                        continue
+                else:
+                    last_error = f"Ошибка {response.status_code}: {response.text[:200]}"
+                    if response.status_code in [401, 403]:
+                        break
+                    continue
+                    
+            except requests.exceptions.Timeout:
+                last_error = "Таймаут запроса. Пробую следующую модель..."
+                continue
             except Exception as e:
                 last_error = str(e)
-                # Если это не ошибка модели, прекращаем попытки
-                if "403" in last_error or "401" in last_error or "429" in last_error:
-                    break
                 continue
         
         # Если все модели не сработали, возвращаем последнюю ошибку
@@ -111,14 +226,6 @@ def analyze_dialog(dialog_text, api_key):
     
     except Exception as e:
         error_msg = str(e)
-        error_details = {}
-        
-        # Пытаемся извлечь детали ошибки
-        try:
-            if hasattr(e, 'response') and hasattr(e.response, 'json'):
-                error_details = e.response.json()
-        except:
-            pass
         
         # Детальная обработка различных типов ошибок
         if "403" in error_msg or "Forbidden" in error_msg:
@@ -129,75 +236,58 @@ def analyze_dialog(dialog_text, api_key):
                 "**Возможные причины:**\n"
                 "1. Неправильный или недействительный API-ключ\n"
                 "2. API-ключ истёк или был отозван\n"
-                "3. Превышен лимит запросов (бесплатный план имеет ограничения)\n"
-                "4. Учетная запись заблокирована или имеет ограничения\n\n"
+                "3. Нет доступа к модели\n"
+                "4. Превышен лимит запросов\n\n"
                 "**Решение:**\n"
-                "• Проверьте правильность API-ключа на https://console.groq.com/\n"
-                "• Убедитесь, что скопировали ключ полностью (без пробелов)\n"
-                "• Создайте новый API-ключ в консоли Groq\n"
-                "• Проверьте лимиты использования в консоли\n"
-                "• Подождите несколько часов, если превысили лимит бесплатного плана\n"
-                "• Свяжитесь с поддержкой Groq, если проблема сохраняется"
+                "• Проверьте токен в коде (переменная HF_TOKEN)\n"
+                "• Убедитесь, что токен активен на https://huggingface.co/settings/tokens\n"
+                "• Проверьте лимиты использования\n"
+                "• Подождите несколько минут, если превысили лимит"
             )
-            if error_details:
-                detailed_msg += f"\n\n**Детали от API:**\n```json\n{json.dumps(error_details, indent=2, ensure_ascii=False)}\n```"
             return None, detailed_msg
         elif "401" in error_msg or "Unauthorized" in error_msg:
             return None, (
                 "❌ Ошибка авторизации (401 Unauthorized):\n\n"
-                "API-ключ неверный или отсутствует.\n"
-                "Проверьте правильность ввода ключа в боковой панели."
+                "**Возможные причины:**\n"
+                "1. API-ключ неверный или отсутствует\n"
+                "2. Модель Llama-3 требует принятия лицензии на HuggingFace\n"
+                "3. Ключ не имеет прав доступа к модели\n\n"
+                "**Решение:**\n"
+                "• Проверьте токен в коде (переменная HF_TOKEN)\n"
+                "• **ВАЖНО**: Примите лицензию Llama-3 на https://huggingface.co/meta-llama/Llama-3-8b-Instruct\n"
+                "  (нажмите кнопку 'Agree and access repository')\n"
+                "• Проверьте токен на https://huggingface.co/settings/tokens"
             )
         elif "429" in error_msg or "rate limit" in error_msg.lower():
             return None, (
                 "❌ Превышен лимит запросов (429):\n\n"
                 "Слишком много запросов к API.\n"
-                "Подождите несколько минут или часов и попробуйте снова.\n"
-                "Бесплатный план Groq имеет ограничения на количество запросов."
+                "Подождите несколько минут и попробуйте снова.\n"
+                "HuggingFace имеет ограничения на количество запросов."
+            )
+        elif "503" in error_msg or "loading" in error_msg.lower():
+            return None, (
+                "⏳ Модель загружается (503):\n\n"
+                "Модель ещё не готова к использованию.\n"
+                "Подождите 10-30 секунд и попробуйте снова."
             )
         else:
-            return None, f"❌ Ошибка при обращении к API:\n\n{error_msg}\n\nПроверьте подключение к интернету и правильность API-ключа."
+            return None, f"❌ Ошибка при обращении к API:\n\n{error_msg}\n\nПроверьте подключение к интернету и правильность токена."
 
-# Боковая панель для API-ключа
+# Боковая панель
 with st.sidebar:
     st.header("⚙️ Настройки")
     
-    # Попытка получить API-ключ из переменных окружения
-    default_api_key = os.getenv("GROQ_API_KEY", "")
+    st.info("🔑 API-ключ встроен в код")
     
-    api_key = st.text_input(
-        "API-ключ Groq",
-        type="password",
-        value=default_api_key if default_api_key else "",
-        help="Вставьте ваш API-ключ от Groq. Получить можно на https://console.groq.com/",
-        placeholder="gsk_..."
-    )
-    
-    if default_api_key:
-        st.info("ℹ️ Используется API-ключ из переменных окружения")
-    
-    # Информация о формате ключа
-    with st.expander("ℹ️ Как получить API-ключ"):
-        st.markdown("""
-        1. Перейдите на https://console.groq.com/
-        2. Войдите или зарегистрируйтесь
-        3. Перейдите в раздел **API Keys**
-        4. Нажмите **Create API Key**
-        5. Скопируйте ключ (начинается с `gsk_`)
-        6. Вставьте его в поле выше
-        
-        ⚠️ **Важно**: Ключ должен начинаться с `gsk_` и не содержать пробелов
-        """)
-    
-    # Кнопка для тестирования API-ключа
-    if api_key:
-        if st.button("🔍 Тестировать API-ключ", use_container_width=True):
-            with st.spinner("Проверяю API-ключ..."):
-                is_valid, error = test_api_key(api_key)
-                if is_valid:
-                    st.success("✅ API-ключ работает!")
-                else:
-                    st.error(f"❌ API-ключ не работает:\n\n{error}")
+    # Кнопка для тестирования API
+    if st.button("🔍 Тестировать подключение", use_container_width=True):
+        with st.spinner("Проверяю подключение к API..."):
+            is_valid, error = test_api()
+            if is_valid:
+                st.success("✅ Подключение работает!")
+            else:
+                st.error(f"❌ Ошибка подключения:\n\n{error}")
     
     st.markdown("---")
     st.markdown("### 📖 О приложении")
@@ -208,6 +298,10 @@ with st.sidebar:
     Приложение анализирует:
     - **HARD DATA**: факты, бюджет, дедлайны
     - **SOFT SKILLS**: эмоции, психология, советы
+    
+    **Используемые модели:** Llama-3 (стабильные для работы с текстом)
+    
+    **API:** Новый роутер Hugging Face
     """)
 
 # Главный заголовок
@@ -229,10 +323,9 @@ with col1:
 with col2:
     st.subheader("📋 Инструкция")
     st.markdown("""
-    1. Вставьте API-ключ в боковую панель
-    2. Введите диалог в поле слева
-    3. Нажмите кнопку "Запустить анализ"
-    4. Получите структурированный анализ
+    1. Введите диалог в поле слева
+    2. Нажмите кнопку "Запустить анализ"
+    3. Получите структурированный анализ
     """)
 
 # Кнопка анализа
@@ -245,17 +338,15 @@ analyze_button = st.button(
 
 # Обработка анализа
 if analyze_button:
-    if not api_key:
-        st.error("❌ Пожалуйста, введите API-ключ Groq в боковой панели")
-    elif not dialog_input.strip():
+    if not dialog_input.strip():
         st.error("❌ Пожалуйста, введите диалог для анализа")
     else:
         with st.spinner("🔄 Анализирую диалог... Это может занять несколько секунд"):
-            result, error = analyze_dialog(dialog_input, api_key)
+            result, error = analyze_dialog(dialog_input)
         
         if error:
             st.error(error)
-            st.info("💡 **Совет**: Если проблема сохраняется, попробуйте:\n- Создать новый API-ключ на https://console.groq.com/\n- Проверить, что ключ скопирован полностью\n- Убедиться, что нет лишних пробелов в начале или конце ключа")
+            st.info("💡 **Совет**: Если проблема сохраняется, проверьте:\n- Токен в коде (переменная HF_TOKEN)\n- Принята ли лицензия Llama-3 на HuggingFace\n- Подключение к интернету")
         else:
             st.success("✅ Анализ завершен!")
             st.markdown("---")
@@ -301,7 +392,7 @@ if analyze_button:
 st.markdown("---")
 st.markdown(
     "<div style='text-align: center; color: #666;'>"
-    "Цифровой супервизор продаж | Powered by Groq & Streamlit"
+    "Цифровой супервизор продаж | Powered by HuggingFace Router & Streamlit"
     "</div>",
     unsafe_allow_html=True
 )
